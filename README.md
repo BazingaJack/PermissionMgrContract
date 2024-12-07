@@ -1,1 +1,2 @@
 # PermissionMgrContract
+目前合约已部署到以太坊的sepolia测试网上，合约部署地址为0xE818fa3a7Bb579Aa0Bf4991BF357eaE5C6E2Fd57
