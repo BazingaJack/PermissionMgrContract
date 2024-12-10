@@ -24,7 +24,7 @@ contract PermissionManager {
         uint256 publicKeyCount; // 收集到的公钥数量
         address[] activeNodes; // 当前轮次的活跃节点
         mapping(address => bytes32) publicKeys; // 节点地址到公钥映射
-        bytes32 systemPublicKey; // 系统公钥
+        bool isGenerated; // 系统公钥是否已生成
     }
 
     // State Variables
@@ -44,7 +44,8 @@ contract PermissionManager {
     event NodeJoined(address indexed node,uint256 indexed roundIndex);
     event NodeLeaveProposed(address indexed node,uint256 indexed roundIndex);
     event NodeLeft(address indexed node,uint256 indexed roundIndex);
-    event SystemPublicKeyGenerated(uint256 indexed roundIndex, bytes32 systemPublicKey, address[] participants);
+    event SystemPublicKeyGenerated(uint256 indexed roundIndex, bytes32[] publicKeys, address[] participants);
+    event TransferGasUsed(address indexed node, uint256 amount, uint256 gasUsed);
 
     // Modifiers
     modifier onlyOwner() {
@@ -89,7 +90,7 @@ contract PermissionManager {
         approvalCounts[currentRoundIndex][_node]++;
 
         uint256 approvalThreshold = rounds[currentRoundIndex].activeNodes.length;
-        if (approvalCounts[currentRoundIndex][_node] >= (approvalThreshold / 2)) {
+        if (approvalCounts[currentRoundIndex][_node] * 2 >= approvalThreshold) {
             _finalizeJoinNode(_node);
         }
     }
@@ -114,7 +115,7 @@ contract PermissionManager {
         leaveApprovalsCount[_node]++;
 
         uint256 approvalThreshold = rounds[currentRoundIndex].activeNodes.length;
-        if (leaveApprovalsCount[_node] >= (approvalThreshold / 2)) {
+        if (leaveApprovalsCount[_node] * 2 >= approvalThreshold ) {
             _finalizeLeaveNode(_node);
         }
     }
@@ -123,20 +124,16 @@ contract PermissionManager {
     function submitPubKey(bytes32 _pubKey,uint256 _round) external onlyPermissioned(msg.sender) {
         require(_round ==  currentRoundIndex, "Round mismatch");
         Round storage currentRound = rounds[currentRoundIndex];
-        require(currentRound.publicKeys[msg.sender].length == 0, "Already submitted public key");
+        require(currentRound.publicKeys[msg.sender] == bytes32(0), "Already submitted public key");
         require(block.timestamp <= currentRound.timeout, "Round timed out");
 
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
 
         // 如果收集到足够公钥或者超时，生成系统公钥
-        if (currentRound.publicKeyCount >= (currentRound.activeNodes.length / 2) || block.timestamp > currentRound.timeout) {
+        if (currentRound.publicKeyCount * 2 >= currentRound.activeNodes.length || block.timestamp > currentRound.timeout) {
             _generateSystemPublicKey();
         }
-    }
-
-    function getSystemPublicKey(uint256 _round) external view onlyPermissioned(msg.sender) returns (bytes32, address[] memory) {
-        return (rounds[_round].systemPublicKey,rounds[_round].activeNodes);
     }
 
     function setRoundBlocks(uint256 _roundBlocks) external onlyOwner {
@@ -157,6 +154,26 @@ contract PermissionManager {
 
     function getPendingNodeNum() external view returns (uint256) {
         return pendingNodes.length;
+    }
+
+    function getLeavingNodeNum() external view returns (uint256) {
+        return leavingNodes.length;
+    }
+
+    function getRoundPublicKey(uint256 _round, address _node) external view returns (bytes32) {
+        return rounds[_round].publicKeys[_node];
+    }
+
+    function getSystemPublicKey(uint256 _round) public view onlyPermissioned(msg.sender) returns (bytes32[] memory, address[] memory) {
+        bytes32[] memory publicKeys = new bytes32[](rounds[_round].publicKeyCount);
+        address[] memory nodesList = new address[](rounds[_round].publicKeyCount);
+        for(uint256 i = 0; i < rounds[_round].publicKeyCount; i++) {
+            if(rounds[_round].publicKeys[rounds[_round].activeNodes[i]] != bytes32(0)) {
+                publicKeys[i] = rounds[_round].publicKeys[rounds[_round].activeNodes[i]];
+                nodesList[i] = rounds[_round].activeNodes[i];
+            }
+        }
+        return (publicKeys,nodesList);
     }
 
     // Internal Functions
@@ -228,54 +245,31 @@ contract PermissionManager {
             delete leaveApprovals[_node][approver];
         }
 
+        uint256 startGas = gasleft();
+
         uint256 refund = nodes[_node].deposit;
         nodes[_node].isPermissioned = false;
         payable(_node).transfer(refund);
+
+        uint256 gasUsed = startGas - gasleft();
+        emit TransferGasUsed(_node, refund, gasUsed);
+
         emit NodeLeft(_node,currentRoundIndex);
     }
 
     function _generateSystemPublicKey() internal {
         Round storage currentRound = rounds[currentRoundIndex];
+        currentRound.isGenerated = true;
 
-        // 系统公钥生成逻辑（子公钥相乘）
-        bytes32 combinedPublicKey = bytes32(uint256(1));
-        for (uint256 i = 0; i < currentRound.activeNodes.length; i++) {
-            bytes32 nodeKey = currentRound.publicKeys[currentRound.activeNodes[i]];
-            if (nodeKey.length > 0) {
-                combinedPublicKey = mulBytes32(combinedPublicKey, nodeKey);
-            }
-        }
+        bytes32[] memory publicKeys = new bytes32[](currentRound.publicKeyCount);
+        address[] memory nodesList = new address[](currentRound.publicKeyCount);
+        (publicKeys, nodesList) = getSystemPublicKey(currentRoundIndex);
 
-        currentRound.systemPublicKey = combinedPublicKey;
-        emit SystemPublicKeyGenerated(currentRoundIndex, combinedPublicKey, currentRound.activeNodes);
+        emit SystemPublicKeyGenerated(currentRoundIndex, publicKeys, nodesList);
         _startNewRound();
     }
 
-    // 用于模拟两个 bytes32 的乘法
-    function mulBytes32(bytes32 a, bytes32 b) internal pure returns (bytes32) {
-        uint256 aInt = uint256(a);
-        uint256 bInt = uint256(b);
-        uint256 result = aInt * bInt;
-
-        // 确保结果不会溢出
-        require(result / aInt == bInt, "Multiplication overflow");
-        return bytes32(result);
-    }
-
     function _startNewRound() internal {
-
-        // 清除上一轮的投票信息
-        if(currentRoundIndex != 0) {
-            _clearJoinApprovals();
-        }
-        for (uint256 i = 0; i < pendingNodes.length; i++) {
-            address node = pendingNodes[i];
-            for (uint256 j = 0; j < rounds[currentRoundIndex].activeNodes.length; j++) {
-                address approver = rounds[currentRoundIndex].activeNodes[j];
-                delete joinApprovals[node][approver];
-            }
-        }
-
         uint256 startBlock = block.number;
         uint256 timeout = block.timestamp + ROUND_TIMEOUT;
 
@@ -284,6 +278,19 @@ contract PermissionManager {
         newRound.timeout = timeout;
 
         currentRoundIndex = rounds.length - 1;
+
+        // 清除上一轮的投票信息
+        if(currentRoundIndex != 0) {
+            _clearJoinApprovals();
+        }
+        
+        for (uint256 i = 0; i < pendingNodes.length; i++) {
+            address node = pendingNodes[i];
+            for (uint256 j = 0; j < rounds[currentRoundIndex].activeNodes.length; j++) {
+                address approver = rounds[currentRoundIndex].activeNodes[j];
+                delete joinApprovals[node][approver];
+            }
+        }
     }
 
     function _clearJoinApprovals() internal {

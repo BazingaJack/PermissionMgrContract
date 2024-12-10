@@ -2,6 +2,7 @@ import { expect } from "chai";
 import hre from "hardhat";
 import { loadFixture } from "@nomicfoundation/hardhat-toolbox/network-helpers";
 import { extendEnvironment } from "hardhat/config";
+import { populate } from "dotenv";
   
 describe("PermissionManager", function () {
   async function deployPermissionManagerFixture() {
@@ -85,72 +86,165 @@ describe("PermissionManager", function () {
       expect(nodeInfo3.isPermissioned).to.be.false;
       expect(nodeInfo3.active).to.be.false;
 
-      // await permissionManager.connect(node2).approveJoinNode(node4.address);
-      // const nodeInfo4 = await permissionManager.nodes(node4.address);
-      // expect(nodeInfo4.isPermissioned).to.be.true;
-      // expect(nodeInfo4.active).to.be.true;
-
+      await permissionManager.connect(node2).approveJoinNode(node4.address);
+      const nodeInfo4 = await permissionManager.nodes(node4.address);
+      expect(nodeInfo4.isPermissioned).to.be.true;
+      expect(nodeInfo4.active).to.be.true;
     });
   
-    // it("Should allow a node to propose leave", async function () {
-    //   const { permissionManager, owner, node1, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+    it("Should allow a node to propose leave", async function () {
+      const { permissionManager, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
   
-    //   await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
-    //   await permissionManager.connect(owner).approveJoinNode(node1.address);
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
   
-    //   await expect(permissionManager.connect(node1).proposeLeaveNode())
-    //     .to.emit(permissionManager, "NodeLeaveProposed")
-    //     .withArgs(node1.address, 0);
+      await expect(permissionManager.connect(node2).proposeLeaveNode())
+        .to.emit(permissionManager, "NodeLeaveProposed")
+        .withArgs(node2.address, 0);
   
-    //   const nodeInfo = await permissionManager.nodes(node1.address);
-    //   expect(nodeInfo.active).to.be.false;
-    // });
+      const nodeInfo = await permissionManager.nodes(node2.address);
+      expect(nodeInfo.active).to.be.false;
+      expect(nodeInfo.isPermissioned).to.be.true;
+    });
   
-    // it("Should allow permissioned nodes to approve leave proposals", async function () {
-    //   const { permissionManager, owner, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+    it("Should allow permissioned nodes to approve leave proposals", async function () {
+      const { permissionManager, node1, node2, node3, node4, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
   
-    //   await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
-    //   await permissionManager.connect(owner).approveJoinNode(node1.address);
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
+      await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node3.address);
+      await permissionManager.connect(node4).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node4.address);
+      await permissionManager.connect(node2).approveJoinNode(node4.address);
   
-    //   await permissionManager.connect(node1).proposeLeaveNode();
-    //   await permissionManager.connect(owner).approveLeaveNode(node1.address);
-  
-    //   const nodeInfo = await permissionManager.nodes(node1.address);
-    //   expect(nodeInfo.isPermissioned).to.be.false;
-    // });
+      await permissionManager.connect(node4).proposeLeaveNode();
+      await permissionManager.connect(node2).approveLeaveNode(node4.address);
+      const leavingNum = await permissionManager.connect(node4).getLeavingNodeNum();
+      expect(leavingNum).to.equal(1);
+
+      const initialBalance = await hre.ethers.provider.getBalance(node4.address);
+      console.log("initialBalance", initialBalance);
+
+      const tx = await permissionManager.connect(node3).approveLeaveNode(node4.address);
+      const receipt = await tx.wait();
+      
+      // 获取TransferGasUsed事件
+      const transferEvent = receipt?.logs
+        .filter(log => log.topics[0] === permissionManager.interface.getEvent('TransferGasUsed').topicHash)
+        .map(log => permissionManager.interface.parseLog(log))[0];
+        
+      console.log("Transfer Gas Used:", transferEvent?.args.gasUsed);
+
+      const finalBalance = await hre.ethers.provider.getBalance(node4.address);
+      console.log("finalBalance", finalBalance);
+      const nodeInfo = await permissionManager.nodes(node4.address);
+      expect(nodeInfo.isPermissioned).to.be.false;
+      expect(nodeInfo.active).to.be.false;
+
+      expect(finalBalance - initialBalance).to.equal(MIN_DEPOSIT);
+
+    });
   });
   
-  // describe("Public Key Management", function () {
-  //   it("Should allow permissioned nodes to submit public keys", async function () {
-  //     const { permissionManager, owner, node1, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+  describe("Public Key Management", function () {
+    it("Should allow permissioned nodes to submit public keys", async function () {
+      const { permissionManager, node1, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
   
-  //     await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
-  //     await permissionManager.connect(owner).approveJoinNode(node1.address);
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
   
-  //     const pubKey = hre.ethers.utils.formatBytes32String("publicKey");
-  //     await permissionManager.connect(node1).submitPubKey(pubKey, 0);
+      const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      await permissionManager.connect(node1).submitPubKey(pubKey, 0);
   
-  //     const round = await permissionManager.rounds(0);
-  //     expect(round.publicKeys[node1.address]).to.equal(pubKey);
-  //   });
+      const node1PubKey = await permissionManager.getRoundPublicKey(0, node1.address);
+      expect(node1PubKey).to.equal(pubKey);
+    });
   
-  //   it("Should generate system public key when enough public keys are submitted", async function () {
-  //     const { permissionManager, owner, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+    it("Should not allow non-permissioned nodes to submit public keys", async function () {
+      const { permissionManager, node1 } = await loadFixture(deployPermissionManagerFixture);
   
-  //     await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
-  //     await permissionManager.connect(owner).approveJoinNode(node1.address);
+      const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      await expect(
+        permissionManager.connect(node1).submitPubKey(pubKey, 0)
+      ).to.be.revertedWith("Not a permissioned node");
+    });
   
-  //     await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
-  //     await permissionManager.connect(owner).approveJoinNode(node2.address);
+    it("Should not allow submitting public key for wrong round", async function () {
+      const { permissionManager, node1, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
   
-  //     const pubKey1 = hre.ethers.utils.formatBytes32String("publicKey1");
-  //     const pubKey2 = hre.ethers.utils.formatBytes32String("publicKey2");
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
   
-  //     await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
-  //     await permissionManager.connect(node2).submitPubKey(pubKey2, 0);
+      const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      await expect(
+        permissionManager.connect(node1).submitPubKey(pubKey, 1)
+      ).to.be.revertedWith("Round mismatch");
+    });
+    
+    it("Should not allow submitting public key twice in same round", async function () {
+      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
   
-  //     const round = await permissionManager.rounds(0);
-  //     expect(round.systemPublicKey).to.not.equal(hre.ethers.constants.HashZero);
-  //   });
-  // });
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
+      await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node3.address);
+
+      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+  
+      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
+      await expect(
+        permissionManager.connect(node1).submitPubKey(pubKey2, 0)
+      ).to.be.revertedWith("Already submitted public key");
+    });
+  
+    it("Should generate system public key when enough public keys are submitted", async function () {
+      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+  
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
+      await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node3.address);
+  
+      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+  
+      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
+
+      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, 0))
+        .to.emit(permissionManager, "SystemPublicKeyGenerated")
+        .withArgs(0, [pubKey1, pubKey2], [node1.address, node2.address]);
+
+      const round = await permissionManager.connect(node1).rounds(0);
+      const publicKeyNum = round.publicKeyCount;
+      expect(publicKeyNum).to.equal(2);
+  
+    });
+  
+    it("Should allow getting system public key for a round", async function () {
+      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+  
+      await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
+      await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node1).approveJoinNode(node3.address);
+  
+      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+  
+      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
+
+      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, 0))
+        .to.emit(permissionManager, "SystemPublicKeyGenerated")
+        .withArgs(0, [pubKey1, pubKey2], [node1.address, node2.address]);
+
+      const [pubKeys, nodes] = await permissionManager.connect(node1).getSystemPublicKey(0);
+      expect(pubKeys).to.deep.equal([pubKey1, pubKey2]);
+      expect(nodes).to.deep.equal([node1.address, node2.address]);
+    });
+  });
 });
