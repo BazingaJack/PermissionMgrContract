@@ -151,23 +151,52 @@ describe("PermissionManager", function () {
   
   describe("Public Key Management", function () {
     it("Should allow permissioned nodes to submit public keys", async function () {
+      const { permissionManager, owner, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+      
+      const node = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey = hre.ethers.SigningKey.computePublicKey(node.privateKey,false);
+
+      const pubKey = "0x" + uncompressedPubKey.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+      
+      await permissionManager.connect(node).proposeJoinNode({ value: MIN_DEPOSIT });
+  
+      const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node.address]);
+      const hash = hre.ethers.keccak256(message);
+      const signature = await node.signMessage(hre.ethers.getBytes(hash));
+
+      const [isVerified, err, errArg] = await permissionManager.connect(node).verifySignature(signature, node.address);
+      expect(isVerified).to.be.true;
+
+      await permissionManager.connect(node).submitPubKey(pubKey, signature, 0);
+  
+      const nodePubKey = await permissionManager.getRoundPublicKey(0, node.address);
+      expect(nodePubKey).to.equal(pubKey);
+    });
+
+    it("Should reject invalid signature", async function () {
       const { permissionManager, node1, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
-  
+
       await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
-  
+
       const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      await permissionManager.connect(node1).submitPubKey(pubKey, 0);
-  
-      const node1PubKey = await permissionManager.getRoundPublicKey(0, node1.address);
-      expect(node1PubKey).to.equal(pubKey);
+      const signature = hre.ethers.hexlify(hre.ethers.randomBytes(65));
+      await expect(
+        permissionManager.connect(node1).submitPubKey(pubKey, signature, 0)
+      ).to.be.revertedWith("Invalid signature");
     });
   
     it("Should not allow non-permissioned nodes to submit public keys", async function () {
       const { permissionManager, node1 } = await loadFixture(deployPermissionManagerFixture);
   
       const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      const signature = hre.ethers.hexlify(hre.ethers.randomBytes(65));
       await expect(
-        permissionManager.connect(node1).submitPubKey(pubKey, 0)
+        permissionManager.connect(node1).submitPubKey(pubKey, signature, 0)
       ).to.be.revertedWith("Not a permissioned node");
     });
   
@@ -177,74 +206,131 @@ describe("PermissionManager", function () {
       await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
   
       const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      const signature = hre.ethers.hexlify(hre.ethers.randomBytes(65));
       await expect(
-        permissionManager.connect(node1).submitPubKey(pubKey, 1)
+        permissionManager.connect(node1).submitPubKey(pubKey, signature, 1)
       ).to.be.revertedWith("Round mismatch");
     });
     
     it("Should not allow submitting public key twice in same round", async function () {
-      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
-  
+      const { permissionManager, owner, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+      
+      const node = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey = hre.ethers.SigningKey.computePublicKey(node.privateKey,false);
+
+      const pubKey = "0x" + uncompressedPubKey.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+      
+      await permissionManager.connect(node).proposeJoinNode({ value: MIN_DEPOSIT });
       await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
       await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
-      await permissionManager.connect(node1).approveJoinNode(node2.address);
-      await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
-      await permissionManager.connect(node1).approveJoinNode(node3.address);
 
-      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
+      await permissionManager.connect(node).approveJoinNode(node1.address);
+      await permissionManager.connect(node).approveJoinNode(node2.address);
   
-      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
-      await expect(
-        permissionManager.connect(node1).submitPubKey(pubKey2, 0)
-      ).to.be.revertedWith("Already submitted public key");
+      const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node.address]);
+      const hash = hre.ethers.keccak256(message);
+      const signature = await node.signMessage(hre.ethers.getBytes(hash));
+
+      await permissionManager.connect(node).submitPubKey(pubKey, signature, 0);
+
+      await expect(permissionManager.connect(node).submitPubKey(pubKey, signature, 0)).to.be.revertedWith("Already submitted public key");
+
     });
   
     it("Should generate system public key when enough public keys are submitted", async function () {
-      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
-  
+      const { permissionManager, owner, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+      
+      const node1 = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey = hre.ethers.SigningKey.computePublicKey(node1.privateKey,false);
+
+      const pubKey = "0x" + uncompressedPubKey.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node1.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+
+      const node2 = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey2 = hre.ethers.SigningKey.computePublicKey(node2.privateKey,false);
+
+      const pubKey2 = "0x" + uncompressedPubKey2.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node2.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+      
       await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
       await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
-      await permissionManager.connect(node1).approveJoinNode(node2.address);
       await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
       await permissionManager.connect(node1).approveJoinNode(node3.address);
   
-      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-  
-      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
+      const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node1.address]);
+      const hash = hre.ethers.keccak256(message);
+      const signature = await node1.signMessage(hre.ethers.getBytes(hash));
 
-      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, 0))
-        .to.emit(permissionManager, "SystemPublicKeyGenerated")
-        .withArgs(0, [pubKey1, pubKey2], [node1.address, node2.address]);
+      await permissionManager.connect(node1).submitPubKey(pubKey, signature, 0);
 
-      const round = await permissionManager.connect(node1).rounds(0);
-      const publicKeyNum = round.publicKeyCount;
-      expect(publicKeyNum).to.equal(2);
-  
+      const message2 = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node2.address]);
+      const hash2 = hre.ethers.keccak256(message2);
+      const signature2 = await node2.signMessage(hre.ethers.getBytes(hash2));
+
+      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, signature2, 0)).to.emit(permissionManager, "SystemPublicKeyGenerated")
+        .withArgs(0, [pubKey, pubKey2], [node1.address, node2.address]);
     });
   
     it("Should allow getting system public key for a round", async function () {
-      const { permissionManager, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
-  
+      const { permissionManager, owner, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+      
+      const node1 = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey = hre.ethers.SigningKey.computePublicKey(node1.privateKey,false);
+
+      const pubKey = "0x" + uncompressedPubKey.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node1.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+
+      const node2 = hre.ethers.Wallet.createRandom().connect(hre.ethers.provider);
+      const uncompressedPubKey2 = hre.ethers.SigningKey.computePublicKey(node2.privateKey,false);
+
+      const pubKey2 = "0x" + uncompressedPubKey2.slice(4,68);
+      
+      await owner.sendTransaction({
+        to: node2.address,
+        value: hre.ethers.parseEther("0.1")
+      });
+      
       await permissionManager.connect(node1).proposeJoinNode({ value: MIN_DEPOSIT });
       await permissionManager.connect(node2).proposeJoinNode({ value: MIN_DEPOSIT });
-      await permissionManager.connect(node1).approveJoinNode(node2.address);
       await permissionManager.connect(node3).proposeJoinNode({ value: MIN_DEPOSIT });
+
+      await permissionManager.connect(node1).approveJoinNode(node2.address);
       await permissionManager.connect(node1).approveJoinNode(node3.address);
   
-      const pubKey1 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      const pubKey2 = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-  
-      await permissionManager.connect(node1).submitPubKey(pubKey1, 0);
+      const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node1.address]);
+      const hash = hre.ethers.keccak256(message);
+      const signature = await node1.signMessage(hre.ethers.getBytes(hash));
 
-      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, 0))
-        .to.emit(permissionManager, "SystemPublicKeyGenerated")
-        .withArgs(0, [pubKey1, pubKey2], [node1.address, node2.address]);
+      await permissionManager.connect(node1).submitPubKey(pubKey, signature, 0);
 
-      const [pubKeys, nodes] = await permissionManager.connect(node1).getSystemPublicKey(0);
-      expect(pubKeys).to.deep.equal([pubKey1, pubKey2]);
-      expect(nodes).to.deep.equal([node1.address, node2.address]);
+      const message2 = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node2.address]);
+      const hash2 = hre.ethers.keccak256(message2);
+      const signature2 = await node2.signMessage(hre.ethers.getBytes(hash2));
+
+      await permissionManager.connect(node2).submitPubKey(pubKey2, signature2, 0);
+
+      const [publicKeys, nodesList] = await permissionManager.connect(node1).getSystemPublicKey(0);
+      expect(publicKeys).to.deep.equal([pubKey, pubKey2]);
+      expect(nodesList).to.deep.equal([node1.address, node2.address]);
     });
   });
 });

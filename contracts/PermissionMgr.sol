@@ -2,9 +2,14 @@
 pragma solidity ^0.8.27;
 
 // Uncomment this line to use console.log
-// import "hardhat/console.sol";
+import "hardhat/console.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 contract PermissionManager {
+
+    using ECDSA for bytes32;
+
     // global variables
     uint256 public ROUND_BLOCKS; // 每轮次持续的区块数
     uint256 public ROUND_TIMEOUT; // 超时（秒）
@@ -121,11 +126,14 @@ contract PermissionManager {
     }
 
     // Public Key Management
-    function submitPubKey(bytes32 _pubKey,uint256 _round) external onlyPermissioned(msg.sender) {
+    function submitPubKey(bytes32 _pubKey, bytes memory _signature, uint256 _round) external onlyPermissioned(msg.sender) {
         require(_round ==  currentRoundIndex, "Round mismatch");
         Round storage currentRound = rounds[currentRoundIndex];
         require(currentRound.publicKeys[msg.sender] == bytes32(0), "Already submitted public key");
         require(block.timestamp <= currentRound.timeout, "Round timed out");
+
+        (bool isVerified, ECDSA.RecoverError err, bytes32 errArg) = verifySignature(_signature, msg.sender);
+        require(isVerified && err == ECDSA.RecoverError.NoError && errArg == bytes32(0), "Invalid signature");
 
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
@@ -134,6 +142,20 @@ contract PermissionManager {
         if (currentRound.publicKeyCount * 2 >= currentRound.activeNodes.length || block.timestamp > currentRound.timeout) {
             _generateSystemPublicKey();
         }
+    }
+
+    function verifySignature(bytes memory _signature, address _node) public pure returns (bool, ECDSA.RecoverError, bytes32) {
+
+        bytes32 messageHash = keccak256(abi.encode(_node));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+
+        (address recoveredAddress, ECDSA.RecoverError err, bytes32 errArg) = ECDSA.tryRecover(ethSignedMessageHash, _signature);
+        bool isVerified = true;
+        if(err != ECDSA.RecoverError.NoError || errArg != bytes32(0)) {
+            return (false, err, errArg);
+        }
+        isVerified = recoveredAddress == _node;
+        return (isVerified, err, errArg);
     }
 
     function setRoundBlocks(uint256 _roundBlocks) external onlyOwner {
