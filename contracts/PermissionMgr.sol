@@ -14,6 +14,7 @@ contract PermissionManager {
     uint256 public ROUND_BLOCKS; // 每轮次持续的区块数
     uint256 public ROUND_TIMEOUT; // 超时（秒）
     uint256 public MIN_DEPOSIT; // 最小保证金
+    uint256 public constant MAX_VALIDATORS = 10; // 最大验证者数量
 
     // Structs
     struct Node {
@@ -21,6 +22,8 @@ contract PermissionManager {
         uint256 deposit; // 节点保证金
         bool active; // 节点是否活跃
         bytes32 publicKey; // 节点提交的公钥
+        uint256 totalStake; // 总质押量(包括自质押和委托)
+        uint256 selfStake; // 自质押量
     }
 
     struct Round {
@@ -32,25 +35,30 @@ contract PermissionManager {
         bool isGenerated; // 系统公钥是否已生成
     }
 
+    struct Delegate {
+        address delegator;
+        uint256 amount;
+    }
+
     // State Variables
     address public owner;
     uint256 public currentRoundIndex = 0;
     mapping(address => Node) public nodes; // 节点地址到节点信息的映射
+    mapping(address => Delegate[]) public delegations; // 节点到其被委托质押信息的映射
     Round[] public rounds; // 所有轮次记录
-    address[] public pendingNodes; // 待审批节点
-    address[] public leavingNodes; // 待离开节点
-    mapping(address => mapping(address => bool)) public joinApprovals; // 新节点 -> 审批节点 -> 是否已投票
-    mapping(address => mapping(address => bool)) public leaveApprovals; // 离开节点 -> 审批节点 -> 是否已投票
-    mapping(uint256 => mapping(address => uint256)) public approvalCounts; // 轮次 -> 节点 -> 已收到的投票数
-    mapping(address => uint256) public leaveApprovalsCount; // 离开节点 -> 已收到的投票数
+    address[] public candidates; // 已提交保证金的候选人列表
+    address[] public leavingNodes; // 主动提出要退出的验证者列表
+    address[] public validators; // 当前验证者列表
 
     // Events
-    event NodeJoinProposed(address indexed node,uint256 indexed roundIndex);
-    event NodeJoined(address indexed node,uint256 indexed roundIndex);
+    event NodeElectionProposed(address indexed node,uint256 indexed roundIndex);
     event NodeLeaveProposed(address indexed node,uint256 indexed roundIndex);
-    event NodeLeft(address indexed node,uint256 indexed roundIndex);
     event SystemPublicKeyGenerated(uint256 indexed roundIndex, bytes32[] publicKeys, address[] participants);
     event TransferGasUsed(address indexed node, uint256 amount, uint256 gasUsed);
+    event Staked(address indexed staker, uint256 amount);
+    event Delegated(address indexed delegator, address indexed validator, uint256 amount);
+    event RevokeDelegated(address indexed delegator, address indexed valildator, uint256 amounToRevoke);
+    event ValidatorUpdated(address indexed validator, bool added);
 
     // Modifiers
     modifier onlyOwner() {
@@ -73,56 +81,30 @@ contract PermissionManager {
     }
 
     // Node Management
-    function proposeJoinNode() external payable {
+    function proposeElection() external payable {
         require(!nodes[msg.sender].isPermissioned, "Already a permissioned node");
         require(msg.value >= MIN_DEPOSIT, "Deposit required");
 
-        nodes[msg.sender] = Node(false, msg.value, false, "");
-        pendingNodes.push(msg.sender);
-
-        emit NodeJoinProposed(msg.sender,currentRoundIndex);
-
-        if(rounds[currentRoundIndex].activeNodes.length == 0) {
-            _finalizeJoinNode(msg.sender);
-        }
+        nodes[msg.sender] = Node({
+            isPermissioned: false,
+            deposit: msg.value,
+            active: false,
+            publicKey: "",
+            totalStake: 0,
+            selfStake: 0
+        });
+        
+        candidates.push(msg.sender);
+        emit NodeElectionProposed(msg.sender, currentRoundIndex);
     }
 
-    function approveJoinNode(address _node) external onlyPermissioned(msg.sender) {
-        require(_isPendingNode(_node), "Node not proposed for join");
-        require(!_hasApproved(msg.sender, _node), "Already approved");
-
-        joinApprovals[_node][msg.sender] = true;
-        approvalCounts[currentRoundIndex][_node]++;
-
-        uint256 approvalThreshold = rounds[currentRoundIndex].activeNodes.length;
-        if (approvalCounts[currentRoundIndex][_node] * 2 >= approvalThreshold) {
-            _finalizeJoinNode(_node);
-        }
-    }
-
-    function proposeLeaveNode() external onlyPermissioned(msg.sender) {
+    function proposeLeave() external onlyPermissioned(msg.sender) {
         require(nodes[msg.sender].active, "Node not active");
 
         nodes[msg.sender].active = false;
         leavingNodes.push(msg.sender);
         emit NodeLeaveProposed(msg.sender,currentRoundIndex);
 
-        if(rounds[currentRoundIndex].activeNodes.length == 1) {
-            _finalizeLeaveNode(msg.sender);
-        }
-    }
-
-    function approveLeaveNode(address _node) external onlyPermissioned(msg.sender) {
-        require(_isLeavingNode(_node), "Node not proposed for leave");
-        require(!_hasApprovedToLeave(msg.sender, _node), "Already approved to leave");
-
-        leaveApprovals[_node][msg.sender] = true;
-        leaveApprovalsCount[_node]++;
-
-        uint256 approvalThreshold = rounds[currentRoundIndex].activeNodes.length;
-        if (leaveApprovalsCount[_node] * 2 >= approvalThreshold ) {
-            _finalizeLeaveNode(_node);
-        }
     }
 
     // Public Key Management
@@ -174,8 +156,8 @@ contract PermissionManager {
         return rounds[_round].activeNodes.length;
     }
 
-    function getPendingNodeNum() external view returns (uint256) {
-        return pendingNodes.length;
+    function getCandidatesNum() external view returns (uint256) {
+        return candidates.length;
     }
 
     function getLeavingNodeNum() external view returns (uint256) {
@@ -199,9 +181,19 @@ contract PermissionManager {
     }
 
     // Internal Functions
-    function _isPendingNode(address _node) internal view returns (bool) {
-        for (uint256 i = 0; i < pendingNodes.length; i++) {
-            if (pendingNodes[i] == _node) {
+    function _isCandidate(address _node) internal view returns (bool) {
+        for (uint256 i = 0; i < candidates.length; i++) {
+            if (candidates[i] == _node) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // 辅助函数，检查地址是否在验证者列表中
+    function isInValidators(address _node) internal view returns (bool) {
+        for (uint256 i = 0; i < validators.length; i++) {
+            if (validators[i] == _node) {
                 return true;
             }
         }
@@ -215,68 +207,6 @@ contract PermissionManager {
             }
         }
         return false;
-    }
-
-    function _hasApproved(address approver, address _node) internal view returns (bool) {
-        return joinApprovals[_node][approver];
-    }
-
-    function _hasApprovedToLeave(address approver, address _node) internal view returns (bool) {
-        return leaveApprovals[_node][approver];
-    }
-
-    function _removePendingNode(address _node) internal {
-        for (uint256 i = 0; i < pendingNodes.length; i++) {
-            if (pendingNodes[i] == _node) {
-                pendingNodes[i] = pendingNodes[pendingNodes.length - 1];
-                pendingNodes.pop();
-                break;
-            }
-        }
-    }
-
-    function _removeLeavingNode(address _node) internal {
-        for (uint256 i = 0; i < leavingNodes.length; i++) {
-            if (leavingNodes[i] == _node) {
-                leavingNodes[i] = leavingNodes[leavingNodes.length - 1];
-                leavingNodes.pop();
-                break;
-            }
-        }
-    }
-
-    function _finalizeJoinNode(address _node) internal {
-        // 移除待审批列表
-        _removePendingNode(_node);
-        
-        nodes[_node].isPermissioned = true;
-        nodes[_node].active = true;
-        rounds[currentRoundIndex].activeNodes.push(_node);
-
-        emit NodeJoined(_node,currentRoundIndex);
-    }
-
-    function _finalizeLeaveNode(address _node) internal {
-        // 移除待审批列表
-        _removeLeavingNode(_node);
-
-        leaveApprovalsCount[_node] = 0;
-        // 清除 leaveApprovals 中有关该节点的投票信息
-        for (uint256 i = 0; i < rounds[currentRoundIndex].activeNodes.length; i++) {
-            address approver = rounds[currentRoundIndex].activeNodes[i];
-            delete leaveApprovals[_node][approver];
-        }
-
-        uint256 startGas = gasleft();
-
-        uint256 refund = nodes[_node].deposit;
-        nodes[_node].isPermissioned = false;
-        payable(_node).transfer(refund);
-
-        uint256 gasUsed = startGas - gasleft();
-        emit TransferGasUsed(_node, refund, gasUsed);
-
-        emit NodeLeft(_node,currentRoundIndex);
     }
 
     function _generateSystemPublicKey() internal {
@@ -301,30 +231,168 @@ contract PermissionManager {
 
         currentRoundIndex = rounds.length - 1;
 
-        // 清除上一轮的投票信息
-        if(currentRoundIndex != 0) {
-            _clearJoinApprovals();
-        }
-        
-        for (uint256 i = 0; i < pendingNodes.length; i++) {
-            address node = pendingNodes[i];
-            for (uint256 j = 0; j < rounds[currentRoundIndex].activeNodes.length; j++) {
-                address approver = rounds[currentRoundIndex].activeNodes[j];
-                delete joinApprovals[node][approver];
-            }
-        }
+        // 在新轮次开始时更新验证者列表
+        _updateValidators();
     }
 
-    function _clearJoinApprovals() internal {
-        // 清除 pendingNodes 的投票信息
-        for (uint256 i = 0; i < pendingNodes.length; i++) {
-            address node = pendingNodes[i];
-            for (uint256 j = 0; j < rounds[currentRoundIndex].activeNodes.length; j++) {
-                address approver = rounds[currentRoundIndex].activeNodes[j];
-                delete joinApprovals[node][approver];
+    // 新增质押函数
+    function stake() external payable {
+        require(msg.value > 0, "Must stake positive amount");
+
+        Node storage node = nodes[msg.sender];
+        node.selfStake += msg.value;
+        node.totalStake += msg.value;
+
+        emit Staked(msg.sender, msg.value);
+    }
+
+    // 新增委托函数
+    function delegate(address validator) external payable {
+        require(msg.value > 0, "Must delegate positive amount");
+        
+        Node storage node = nodes[validator];
+        node.totalStake += msg.value;
+        bool hasDelegated = false;
+
+        for(uint256 i = 0; i < delegations[validator].length; i++) {
+            if(delegations[validator][i].delegator == msg.sender) {
+                delegations[validator][i].amount += msg.value;
+                hasDelegated = true;
+                break;
             }
         }
 
-        delete pendingNodes;
+        if(!hasDelegated){
+            // 创建新的 Delegate 结构体并添加到 delegations 数组
+            Delegate memory d = Delegate({
+                delegator: msg.sender,
+                amount: msg.value
+            });
+            delegations[validator].push(d);
+        }
+
+        emit Delegated(msg.sender, validator, msg.value);
+    }
+
+    // 新增撤销委托函数
+    function revokeDelegation(address validator, uint256 amountToRevoke) external {
+        require(nodes[validator].isPermissioned, "Validator is not permissioned");
+        
+        Node storage node = nodes[validator];
+
+        // 查找用户的委托记录
+        for (uint256 i = 0; i < delegations[validator].length; i++) {
+            if (delegations[validator][i].delegator == msg.sender) {
+                if (amountToRevoke > delegations[validator][i].amount) revert("Amount to revoke exceeds delegated amount");
+
+                // 退还委托金额
+                delegations[validator][i].amount -= amountToRevoke;
+                node.totalStake -= amountToRevoke;
+                payable(msg.sender).transfer(amountToRevoke);
+
+                if (delegations[validator][i].amount == 0) {
+                    // 如果委托金额为0，移除该委托记录
+                    delegations[validator][i] = delegations[validator][delegations[validator].length - 1]; // 用最后一个替换当前
+                    delegations[validator].pop(); // 移除最后一个元素
+                }
+                break;
+            }
+        }
+
+        emit RevokeDelegated(msg.sender, validator, amountToRevoke);
+    }
+
+    // 更新验证者列表
+    function _updateValidators() internal {
+        
+        // 处理上一轮次中提出退出的验证者节点
+        if(leavingNodes.length > 0) {
+            for (uint256 i = 0; i < leavingNodes.length; i++) {
+                address leavingNode = leavingNodes[i];
+                // 如果该节点在当前验证者列表中，移除它
+                if (isInValidators(leavingNode)) {
+                    // 将其标记为不再是权限节点
+                    nodes[leavingNode].isPermissioned = false;
+                    nodes[leavingNode].active = false;
+                    emit ValidatorUpdated(leavingNode, false);
+
+                    // 退款：将保证金和自质押数量退还给该节点
+                    uint256 refund = nodes[leavingNode].deposit + nodes[leavingNode].selfStake;
+                    nodes[leavingNode].deposit = 0;
+                    nodes[leavingNode].totalStake = 0;
+                    nodes[leavingNode].selfStake = 0;
+                    payable(leavingNode).transfer(refund);
+
+                    // 退还委托给该验证者的质押数量
+                    for (uint256 j = 0; j < delegations[leavingNode].length; j++) {
+                        Delegate memory d = delegations[leavingNode][j];
+                        // 退还委托金额
+                        uint256 amount = d.amount;
+                        d.amount = 0;
+                        payable(d.delegator).transfer(amount);
+                        // 清除委托记录
+                        delete delegations[leavingNode][j];
+                    }
+                }
+            }
+            
+            // 清空离开节点列表
+            delete leavingNodes;
+        }
+    
+        // 创建临时数组存储所有节点
+        address[] memory allNodes = new address[](validators.length + candidates.length);
+        uint256 count = 0;
+        
+        // 收集所有节点
+        for(uint i = 0; i < validators.length; i++) {
+            if(nodes[validators[i]].isPermissioned) allNodes[count++] = validators[i];
+        }
+        for(uint i = 0; i < candidates.length; i++) {
+            allNodes[count++] = candidates[i];
+        }
+
+        // 按总质押量排序
+        for(uint i = 0; i < count - 1; i++) {
+            for(uint j = i + 1; j < count; j++) {
+                if(nodes[allNodes[j]].totalStake > nodes[allNodes[i]].totalStake) {
+                    address temp = allNodes[i];
+                    allNodes[i] = allNodes[j];
+                    allNodes[j] = temp;
+                }
+            }
+        }
+
+        // 清空当前验证者列表和候选者列表
+        delete validators;
+        delete candidates;
+
+        // 选择前MAX_VALIDATORS个节点作为新的验证者
+        for(uint i = 0; i < count && i < MAX_VALIDATORS; i++) {
+            address validator = allNodes[i];
+            validators.push(validator);
+                
+            // 如果节点未成为权限节点且质押足够，将其升级为权限节点
+            if(!nodes[validator].isPermissioned && nodes[validator].deposit >= MIN_DEPOSIT) {
+                nodes[validator].isPermissioned = true;
+                nodes[validator].active = true;
+                emit ValidatorUpdated(validator, true);
+            }
+        }
+
+        // 更新候选人列表，直接从第MAX_VALIDATORS+1名开始
+        if(count > MAX_VALIDATORS) {
+            // 创建新的 candidates 列表
+            address[] memory newCandidates = new address[](count - MAX_VALIDATORS);
+            for (uint256 i = MAX_VALIDATORS; i < count; i++) {
+                address candidate = allNodes[i];
+                newCandidates[i - MAX_VALIDATORS] = candidate;
+            }
+            candidates = newCandidates;
+        }
+
+        // 更新Round中的activeNodes
+        Round storage currentRound = rounds[currentRoundIndex];
+        currentRound.activeNodes = validators;
     }
 }
