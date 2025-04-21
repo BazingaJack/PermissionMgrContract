@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.27;
+pragma solidity ^0.8.0;
 
 // Uncomment this line to use console.log
 import "hardhat/console.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+// import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+// import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 contract PermissionManagerV2 {
 
-    using ECDSA for bytes32;
+    // using ECDSA for bytes32;
 
     // global variables
     uint256 public ROUND_BLOCKS; // 每轮次持续的区块数
@@ -115,8 +115,8 @@ contract PermissionManagerV2 {
         require(currentRound.publicKeys[msg.sender] == bytes32(0), "Already submitted public key");
         require(block.timestamp <= currentRound.timeout, "Round timed out");
 
-        (bool isVerified, ECDSA.RecoverError err, bytes32 errArg) = verifySignature(_signature, msg.sender);
-        require(isVerified && err == ECDSA.RecoverError.NoError && errArg == bytes32(0), "Invalid signature");
+        // (bool isVerified, ECDSA.RecoverError err, bytes32 errArg) = verifySignature(_signature, msg.sender);
+        // require(isVerified && err == ECDSA.RecoverError.NoError && errArg == bytes32(0), "Invalid signature");
 
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
@@ -127,19 +127,19 @@ contract PermissionManagerV2 {
         }
     }
 
-    function verifySignature(bytes memory _signature, address _node) public pure returns (bool, ECDSA.RecoverError, bytes32) {
+    // function verifySignature(bytes memory _signature, address _node) public pure returns (bool, ECDSA.RecoverError, bytes32) {
 
-        bytes32 messageHash = keccak256(abi.encode(_node));
-        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+    //     bytes32 messageHash = keccak256(abi.encode(_node));
+    //     bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
 
-        (address recoveredAddress, ECDSA.RecoverError err, bytes32 errArg) = ECDSA.tryRecover(ethSignedMessageHash, _signature);
-        bool isVerified = true;
-        if(err != ECDSA.RecoverError.NoError || errArg != bytes32(0)) {
-            return (false, err, errArg);
-        }
-        isVerified = recoveredAddress == _node;
-        return (isVerified, err, errArg);
-    }
+    //     (address recoveredAddress, ECDSA.RecoverError err, bytes32 errArg) = ECDSA.tryRecover(ethSignedMessageHash, _signature);
+    //     bool isVerified = true;
+    //     if(err != ECDSA.RecoverError.NoError || errArg != bytes32(0)) {
+    //         return (false, err, errArg);
+    //     }
+    //     isVerified = recoveredAddress == _node;
+    //     return (isVerified, err, errArg);
+    // }
 
     function setRoundBlocks(uint256 _roundBlocks) external onlyOwner {
         ROUND_BLOCKS = _roundBlocks;
