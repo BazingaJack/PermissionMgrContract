@@ -15,6 +15,7 @@ contract PermissionManagerV2 {
     uint256 public ROUND_TIMEOUT; // 超时（秒）
     uint256 public MIN_DEPOSIT; // 最小保证金
     uint256 public MAX_VALIDATORS; // 最大验证者数量
+    uint256 public PROPOSAL_ID; // 提案ID
 
     // Structs
     struct Node {
@@ -22,6 +23,7 @@ contract PermissionManagerV2 {
         uint256 deposit; // 节点保证金
         bool active; // 节点是否活跃
         bytes32 publicKey; // 节点提交的公钥
+        bytes32 privateKey; // 节点的私钥(加密值)
         uint256 totalStake; // 总质押量(包括自质押和委托)
         uint256 selfStake; // 自质押量
     }
@@ -30,14 +32,23 @@ contract PermissionManagerV2 {
         uint256 startBlock; // 轮次起始区块号
         uint256 timeout; // 轮次超时
         uint256 publicKeyCount; // 收集到的公钥数量
+        uint256 privateKeyCount; // 收集到的私钥数量
         address[] activeNodes; // 当前轮次的活跃节点
         mapping(address => bytes32) publicKeys; // 节点地址到公钥映射
+        mapping(address => bytes32) privateKeys; // 节点地址到私钥映射
         bool isGenerated; // 系统公钥是否已生成
     }
 
     struct Delegate {
         address delegator;
         uint256 amount;
+    }
+
+    struct Proposal {
+        uint256 proposalId; // 提案ID
+        address proposer; // 提案人地址
+        uint256 blockNumber; // 提案所在区块号
+        string description; // 提案描述
     }
 
     // State Variables
@@ -49,6 +60,7 @@ contract PermissionManagerV2 {
     address[] public candidates; // 已提交保证金的候选人列表
     address[] public leavingNodes; // 主动提出要退出的验证者列表
     address[] public validators; // 当前验证者列表
+    mapping(uint256 => Proposal) public proposals;
 
     // Events
     event NodeElectionProposed(address indexed node,uint256 indexed roundIndex);
@@ -59,6 +71,7 @@ contract PermissionManagerV2 {
     event Delegated(address indexed delegator, address indexed validator, uint256 amount);
     event RevokeDelegated(address indexed delegator, address indexed valildator, uint256 amounToRevoke);
     event ValidatorUpdated(address indexed validator, bool added);
+    event NewProposalArrived(uint256 indexed proposalId, address indexed proposer, uint256 blockNumber, string description);
 
     // Modifiers
     modifier onlyOwner() {
@@ -78,6 +91,7 @@ contract PermissionManagerV2 {
         ROUND_TIMEOUT = _roundTimeout;
         MIN_DEPOSIT = _minDeposit;
         MAX_VALIDATORS = _maxValidators;
+        PROPOSAL_ID = 0;
         _startNewRound();
     }
 
@@ -91,6 +105,7 @@ contract PermissionManagerV2 {
             deposit: msg.value,
             active: false,
             publicKey: "",
+            privateKey: "",
             totalStake: 0,
             selfStake: 0
         });
@@ -118,6 +133,7 @@ contract PermissionManagerV2 {
         // (bool isVerified, ECDSA.RecoverError err, bytes32 errArg) = verifySignature(_signature, msg.sender);
         // require(isVerified && err == ECDSA.RecoverError.NoError && errArg == bytes32(0), "Invalid signature");
 
+        nodes[msg.sender].publicKey = _pubKey;
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
 
@@ -125,6 +141,17 @@ contract PermissionManagerV2 {
         if (currentRound.publicKeyCount * 2 >= currentRound.activeNodes.length || block.timestamp > currentRound.timeout) {
             _generateSystemPublicKey();
         }
+    }
+
+    function submitPriKey(bytes32 _priKey, uint256 _round) external onlyPermissioned(msg.sender) {
+        require(_round == currentRoundIndex, "Round mismatch");
+        Round storage currentRound = rounds[currentRoundIndex];
+        require(currentRound.privateKeys[msg.sender] == bytes32(0), "Already submitted private key");
+        require(block.timestamp <= rounds[currentRoundIndex].timeout, "Round timed out");
+
+        nodes[msg.sender].privateKey = _priKey;
+        currentRound.privateKeys[msg.sender] = _priKey;
+        currentRound.privateKeyCount++;
     }
 
     // function verifySignature(bytes memory _signature, address _node) public pure returns (bool, ECDSA.RecoverError, bytes32) {
@@ -171,6 +198,11 @@ contract PermissionManagerV2 {
 
     function getRoundPublicKey(uint256 _round, address _node) external view returns (bytes32) {
         return rounds[_round].publicKeys[_node];
+    }
+
+    function getRoundPrivateKey(uint256 _round, address _node) external view returns (bytes32) {
+        require(msg.sender == _node, "Not authorized to view private key");
+        return rounds[_round].privateKeys[_node];
     }
 
     function getSystemPublicKey(uint256 _round) public view onlyPermissioned(msg.sender) returns (bytes32[] memory, address[] memory) {
@@ -258,6 +290,28 @@ contract PermissionManagerV2 {
     function startElection() external onlyOwner {
         require(block.timestamp > rounds[currentRoundIndex].timeout || currentRoundIndex == 0, "Round not timed out");
         _startNewRound();
+    }
+
+    function submitProposal(uint256 _blockNumber, string memory _description) external {
+        uint256 proposalId = PROPOSAL_ID++;
+        Proposal memory newProposal = Proposal({
+            proposalId: proposalId,
+            proposer: msg.sender,
+            blockNumber: _blockNumber,
+            description: _description            
+        });
+        proposals[proposalId] = newProposal;
+
+        emit NewProposalArrived(proposalId, msg.sender, _blockNumber, _description);
+    }
+
+    function getProposalInfo(uint256 _proposalId) external view returns (address, uint256, string memory) {
+        require(_proposalId < PROPOSAL_ID, "Invalid proposal ID");
+        return (
+            proposals[_proposalId].proposer,
+            proposals[_proposalId].blockNumber,
+            proposals[_proposalId].description
+        );
     }
 
     // Internal Functions
