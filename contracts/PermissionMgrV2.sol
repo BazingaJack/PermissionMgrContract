@@ -217,6 +217,18 @@ contract PermissionManagerV2 {
         return (publicKeys,nodesList);
     }
 
+    function getSystemPrivateKey(uint256 _round) public view onlyPermissioned(msg.sender) returns (bytes32[] memory, address[] memory) {
+        bytes32[] memory privateKeys = new bytes32[](rounds[_round].privateKeyCount);
+        address[] memory nodesList = new address[](rounds[_round].privateKeyCount);
+        for(uint256 i = 0; i < rounds[_round].privateKeyCount; i++) {
+            if(rounds[_round].privateKeys[rounds[_round].activeNodes[i]] != bytes32(0)) {
+                privateKeys[i] = rounds[_round].privateKeys[rounds[_round].activeNodes[i]];
+                nodesList[i] = rounds[_round].activeNodes[i];
+            }
+        }
+        return (privateKeys,nodesList);
+    }
+
     // 新增质押函数
     function stake() external payable {
         require(msg.value > 0, "Must stake positive amount");
@@ -312,6 +324,10 @@ contract PermissionManagerV2 {
             proposals[_proposalId].blockNumber,
             proposals[_proposalId].description
         );
+    }
+
+    function checkStatus(address _node) external view returns (bool) {
+        return _isInValidators(_node);
     }
 
     // Internal Functions
