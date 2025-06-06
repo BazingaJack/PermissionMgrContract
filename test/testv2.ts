@@ -220,12 +220,11 @@ describe("PermissionManagerV2", function () {
   
       const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node.address]);
       const hash = hre.ethers.keccak256(message);
-      const signature = await node.signMessage(hre.ethers.getBytes(hash));
 
       // const [isVerified, err, errArg] = await permissionManager.connect(node).verifySignature(signature, node.address);
       // expect(isVerified).to.be.true;
 
-      await permissionManager.connect(node).submitPubKey(pubKey, signature, 1);
+      await permissionManager.connect(node).submitPubKey(pubKey, 1);
   
       const nodePubKey = await permissionManager.getRoundPublicKey(1, node.address);
       expect(nodePubKey).to.equal(pubKey);
@@ -249,9 +248,8 @@ describe("PermissionManagerV2", function () {
       const { permissionManager, node1 } = await loadFixture(deployPermissionManagerFixture);
   
       const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      const signature = hre.ethers.hexlify(hre.ethers.randomBytes(65));
       await expect(
-        permissionManager.connect(node1).submitPubKey(pubKey, signature, 0)
+        permissionManager.connect(node1).submitPubKey(pubKey, 0)
       ).to.be.revertedWith("Not a permissioned node");
     });
   
@@ -263,9 +261,8 @@ describe("PermissionManagerV2", function () {
       await permissionManager.connect(owner).startElection();
   
       const pubKey = hre.ethers.hexlify(hre.ethers.randomBytes(32));
-      const signature = hre.ethers.hexlify(hre.ethers.randomBytes(65));
       await expect(
-        permissionManager.connect(node1).submitPubKey(pubKey, signature, 0)
+        permissionManager.connect(node1).submitPubKey(pubKey, 0)
       ).to.be.revertedWith("Round mismatch");
     });
     
@@ -291,11 +288,10 @@ describe("PermissionManagerV2", function () {
   
       const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node.address]);
       const hash = hre.ethers.keccak256(message);
-      const signature = await node.signMessage(hre.ethers.getBytes(hash));
 
-      await permissionManager.connect(node).submitPubKey(pubKey, signature, 1);
+      await permissionManager.connect(node).submitPubKey(pubKey, 1);
 
-      await expect(permissionManager.connect(node).submitPubKey(pubKey, signature, 1)).to.be.revertedWith("Already submitted public key");
+      await expect(permissionManager.connect(node).submitPubKey(pubKey, 1)).to.be.revertedWith("Already submitted public key");
 
     });
   
@@ -330,16 +326,13 @@ describe("PermissionManagerV2", function () {
   
       const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node1.address]);
       const hash = hre.ethers.keccak256(message);
-      const signature = await node1.signMessage(hre.ethers.getBytes(hash));
 
-      await permissionManager.connect(node1).submitPubKey(pubKey, signature, 1);
+      await permissionManager.connect(node1).submitPubKey(pubKey, 1);
 
       const message2 = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node2.address]);
       const hash2 = hre.ethers.keccak256(message2);
-      const signature2 = await node2.signMessage(hre.ethers.getBytes(hash2));
 
-      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, signature2, 1)).to.emit(permissionManager, "SystemPublicKeyGenerated")
-        .withArgs(1, [pubKey, pubKey2], [node1.address, node2.address]);
+      await expect(permissionManager.connect(node2).submitPubKey(pubKey2, 1));
     });
   
     it("Should allow getting system public key for a round", async function () {
@@ -373,15 +366,13 @@ describe("PermissionManagerV2", function () {
   
       const message = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node1.address]);
       const hash = hre.ethers.keccak256(message);
-      const signature = await node1.signMessage(hre.ethers.getBytes(hash));
 
-      await permissionManager.connect(node1).submitPubKey(pubKey, signature, 1);
+      await permissionManager.connect(node1).submitPubKey(pubKey, 1);
 
       const message2 = hre.ethers.AbiCoder.defaultAbiCoder().encode(["address"], [node2.address]);
       const hash2 = hre.ethers.keccak256(message2);
-      const signature2 = await node2.signMessage(hre.ethers.getBytes(hash2));
 
-      await permissionManager.connect(node2).submitPubKey(pubKey2, signature2, 1);
+      await permissionManager.connect(node2).submitPubKey(pubKey2, 1);
 
       const [publicKeys, nodesList] = await permissionManager.connect(node1).getSystemPublicKey(1);
       expect(publicKeys).to.deep.equal([pubKey, pubKey2]);
@@ -442,6 +433,47 @@ describe("PermissionManagerV2", function () {
       expect(proposer).to.equal(node.address);
       expect(blockNumber).to.equal(1);
       expect(description).to.equal("lwl owe hz a btc");
+    });
+  });
+
+  describe("Supplementary test", function () {
+    it("Should allow permissioned nodes to get system public key", async function () {
+      const { permissionManager, owner, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+
+      await permissionManager.connect(node1).proposeElection({ value: MIN_DEPOSIT });
+      await permissionManager.connect(node2).proposeElection({ value: MIN_DEPOSIT });
+
+      const candidatesNum = await permissionManager.connect(owner).getCandidatesNum();
+      expect(candidatesNum).to.equal(2);
+
+      await permissionManager.connect(owner).startElection();
+
+      const validatorsNum = await permissionManager.connect(owner).getValidatorsNum();
+      expect(validatorsNum).to.equal(2);
+
+      const validator1 = await permissionManager.connect(owner).validators(0);
+      expect(validator1).to.equal(node1.address);
+      const validator2 = await permissionManager.connect(owner).validators(1);
+      expect(validator2).to.equal(node2.address);
+
+      await permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1);
+      await permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1);
+
+      const [publicKeys, nodesList] = await permissionManager.connect(node1).getSystemPublicKey(1);
+      expect(publicKeys.length).to.equal(2);
+      expect(nodesList.length).to.equal(2);
+
+      const [publiblicKey1, nodesList1] = await permissionManager.connect(node2).getSystemPublicKey(1);
+      expect(publiblicKey1.length).to.equal(2);
+      expect(nodesList1.length).to.equal(2);
+
+      await expect(permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1)).to.be.revertedWith("Already submitted public key");
+      await expect(permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1)).to.be.revertedWith("Already submitted public key");
+    
+      await expect(permissionManager.connect(node1).proposeElection({ value: MIN_DEPOSIT }))
+        .to.be.revertedWith("Already a permissioned node");
+      await expect(permissionManager.connect(node2).proposeElection({ value: MIN_DEPOSIT }))
+        .to.be.revertedWith("Already a permissioned node");
     });
   });
 });

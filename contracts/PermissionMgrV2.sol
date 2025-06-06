@@ -36,7 +36,6 @@ contract PermissionManagerV2 {
         address[] activeNodes; // 当前轮次的活跃节点
         mapping(address => bytes32) publicKeys; // 节点地址到公钥映射
         mapping(address => bytes32) privateKeys; // 节点地址到私钥映射
-        bool isGenerated; // 系统公钥是否已生成
     }
 
     struct Delegate {
@@ -124,11 +123,10 @@ contract PermissionManagerV2 {
     }
 
     // Public Key Management
-    function submitPubKey(bytes32 _pubKey, bytes memory _signature, uint256 _round) external onlyPermissioned(msg.sender) {
+    function submitPubKey(bytes32 _pubKey, uint256 _round) external onlyPermissioned(msg.sender) {
         require(_round ==  currentRoundIndex, "Round mismatch");
         Round storage currentRound = rounds[currentRoundIndex];
         require(currentRound.publicKeys[msg.sender] == bytes32(0), "Already submitted public key");
-        require(block.timestamp <= currentRound.timeout, "Round timed out");
 
         // (bool isVerified, ECDSA.RecoverError err, bytes32 errArg) = verifySignature(_signature, msg.sender);
         // require(isVerified && err == ECDSA.RecoverError.NoError && errArg == bytes32(0), "Invalid signature");
@@ -136,18 +134,13 @@ contract PermissionManagerV2 {
         nodes[msg.sender].publicKey = _pubKey;
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
-
-        // 如果收集到足够公钥或者超时，生成系统公钥
-        if (currentRound.publicKeyCount * 2 >= currentRound.activeNodes.length || block.timestamp > currentRound.timeout) {
-            _generateSystemPublicKey();
-        }
     }
 
     function submitPriKey(bytes32 _priKey, uint256 _round) external onlyPermissioned(msg.sender) {
         require(_round == currentRoundIndex, "Round mismatch");
         Round storage currentRound = rounds[currentRoundIndex];
         require(currentRound.privateKeys[msg.sender] == bytes32(0), "Already submitted private key");
-        require(block.timestamp <= rounds[currentRoundIndex].timeout, "Round timed out");
+        require(block.timestamp <= currentRound.timeout, "Round timed out");
 
         nodes[msg.sender].privateKey = _priKey;
         currentRound.privateKeys[msg.sender] = _priKey;
@@ -206,6 +199,7 @@ contract PermissionManagerV2 {
     }
 
     function getSystemPublicKey(uint256 _round) public view onlyPermissioned(msg.sender) returns (bytes32[] memory, address[] memory) {
+        require(rounds[_round].publicKeyCount * 2 >= rounds[_round].activeNodes.length , "No public keys collected");
         bytes32[] memory publicKeys = new bytes32[](rounds[_round].publicKeyCount);
         address[] memory nodesList = new address[](rounds[_round].publicKeyCount);
         for(uint256 i = 0; i < rounds[_round].publicKeyCount; i++) {
@@ -300,7 +294,6 @@ contract PermissionManagerV2 {
     }
 
     function startElection() external onlyOwner {
-        require(block.timestamp > rounds[currentRoundIndex].timeout || currentRoundIndex == 0, "Round not timed out");
         _startNewRound();
     }
 
@@ -357,18 +350,6 @@ contract PermissionManagerV2 {
             }
         }
         return false;
-    }
-
-    function _generateSystemPublicKey() internal {
-        Round storage currentRound = rounds[currentRoundIndex];
-        currentRound.isGenerated = true;
-
-        bytes32[] memory publicKeys = new bytes32[](currentRound.publicKeyCount);
-        address[] memory nodesList = new address[](currentRound.publicKeyCount);
-        (publicKeys, nodesList) = getSystemPublicKey(currentRoundIndex);
-
-        emit SystemPublicKeyGenerated(currentRoundIndex, publicKeys, nodesList);
-        _startNewRound();
     }
 
     function _startNewRound() internal {
