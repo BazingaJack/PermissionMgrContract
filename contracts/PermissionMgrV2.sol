@@ -125,7 +125,7 @@ contract PermissionManagerV2 {
     }
 
     // Public Key Management
-    function submitPubKey(bytes32 _pubKey, uint256 _round) external onlyPermissioned(msg.sender) {
+    function submitPubKey(bytes32 _pubKey, uint256 _round) external onlyPermissioned(msg.sender) returns (address, bytes32, uint256) {
         require(_round ==  currentRoundIndex, "Round mismatch");
         Round storage currentRound = rounds[currentRoundIndex];
         require(currentRound.publicKeys[msg.sender] == bytes32(0), "Already submitted public key");
@@ -138,6 +138,7 @@ contract PermissionManagerV2 {
         currentRound.publicKeyCount++;
 
         emit PubKeySubmitted(msg.sender, _pubKey, _round);
+        return (msg.sender, _pubKey, _round);
     }
 
     function submitPriKey(bytes32 _priKey, uint256 _round) external onlyPermissioned(msg.sender) {
