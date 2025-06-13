@@ -438,7 +438,7 @@ describe("PermissionManagerV2", function () {
 
   describe("Supplementary test", function () {
     it("Should allow permissioned nodes to get system public key", async function () {
-      const { permissionManager, owner, node1, node2, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
+      const { permissionManager, owner, node1, node2, node3, MIN_DEPOSIT } = await loadFixture(deployPermissionManagerFixture);
 
       await permissionManager.connect(node1).proposeElection({ value: MIN_DEPOSIT });
       await permissionManager.connect(node2).proposeElection({ value: MIN_DEPOSIT });
@@ -456,8 +456,12 @@ describe("PermissionManagerV2", function () {
       const validator2 = await permissionManager.connect(owner).validators(1);
       expect(validator2).to.equal(node2.address);
 
-      await permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1);
-      await permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1);
+      await expect(permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1))
+        .to.emit(permissionManager, "PubKeySubmitted")
+        .withArgs(node1.address, "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1);
+      await expect(permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1))
+        .to.emit(permissionManager, "PubKeySubmitted")
+        .withArgs(node2.address, "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1);
 
       const [publicKeys, nodesList] = await permissionManager.connect(node1).getSystemPublicKey(1);
       expect(publicKeys.length).to.equal(2);
@@ -467,13 +471,21 @@ describe("PermissionManagerV2", function () {
       expect(publiblicKey1.length).to.equal(2);
       expect(nodesList1.length).to.equal(2);
 
-      await expect(permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1)).to.be.revertedWith("Already submitted public key");
-      await expect(permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1)).to.be.revertedWith("Already submitted public key");
+      await expect(permissionManager.connect(node1).submitPubKey("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef", 1))
+        .to.be.revertedWith("Already submitted public key");
+      await expect(permissionManager.connect(node2).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1))
+        .to.be.revertedWith("Already submitted public key");
     
       await expect(permissionManager.connect(node1).proposeElection({ value: MIN_DEPOSIT }))
         .to.be.revertedWith("Already a permissioned node");
       await expect(permissionManager.connect(node2).proposeElection({ value: MIN_DEPOSIT }))
         .to.be.revertedWith("Already a permissioned node");
+
+      await expect(permissionManager.connect(node3).submitPubKey("0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1))
+        .to.be.revertedWith("Not a permissioned node");
+      
+      console.log("Round 0 active nodes:", await permissionManager.getActiveNodeNum(0));
+      console.log("Round 1 active nodes:", await permissionManager.getActiveNodeNum(1));
     });
   });
 });

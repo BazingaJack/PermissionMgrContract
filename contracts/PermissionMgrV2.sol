@@ -71,6 +71,8 @@ contract PermissionManagerV2 {
     event RevokeDelegated(address indexed delegator, address indexed valildator, uint256 amounToRevoke);
     event ValidatorUpdated(address indexed validator, bool added);
     event NewProposalArrived(uint256 indexed proposalId, address indexed proposer, uint256 blockNumber, string description);
+    event PubKeySubmitted(address indexed node, bytes32 pubKey, uint256 round);
+
 
     // Modifiers
     modifier onlyOwner() {
@@ -134,6 +136,8 @@ contract PermissionManagerV2 {
         nodes[msg.sender].publicKey = _pubKey;
         currentRound.publicKeys[msg.sender] = _pubKey;
         currentRound.publicKeyCount++;
+
+        emit PubKeySubmitted(msg.sender, _pubKey, _round);
     }
 
     function submitPriKey(bytes32 _priKey, uint256 _round) external onlyPermissioned(msg.sender) {
