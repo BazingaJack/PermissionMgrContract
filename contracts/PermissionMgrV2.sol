@@ -2,7 +2,7 @@
 pragma solidity ^0.8.0;
 
 // Uncomment this line to use console.log
-import "hardhat/console.sol";
+// import "hardhat/console.sol";
 // import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 // import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
@@ -203,7 +203,7 @@ contract PermissionManagerV2 {
         return rounds[_round].privateKeys[_node];
     }
 
-    function getSystemPublicKey(uint256 _round) public view onlyPermissioned(msg.sender) returns (bytes32[] memory, address[] memory) {
+    function getSystemPublicKey(uint256 _round) public view returns (bytes32[] memory, address[] memory) {
         require(rounds[_round].publicKeyCount * 2 >= rounds[_round].activeNodes.length , "No public keys collected");
         bytes32[] memory publicKeys = new bytes32[](rounds[_round].publicKeyCount);
         address[] memory nodesList = new address[](rounds[_round].publicKeyCount);
